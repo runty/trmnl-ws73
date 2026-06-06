@@ -1,0 +1,10 @@
+/home/YOUR_USER/trmnl-scripts/cron.log {
+    su YOUR_USER YOUR_USER
+    size 5M
+    rotate 7
+    copytruncate
+    missingok
+    notifempty
+    compress
+    delaycompress
+}

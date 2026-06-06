@@ -1,0 +1,2 @@
+*/15 * * * * $HOME/trmnl-scripts/scripts/update_display.sh >> $HOME/trmnl-scripts/cron.log 2>&1
+@reboot sleep 60 && $HOME/trmnl-scripts/scripts/update_display.sh >> $HOME/trmnl-scripts/cron.log 2>&1

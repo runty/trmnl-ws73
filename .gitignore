@@ -1,0 +1,8 @@
+trmnl-ws73.env
+last_image.txt
+update_display.lock
+cron.log
+cron.log.*
+__pycache__/
+*.pyc
+.DS_Store
