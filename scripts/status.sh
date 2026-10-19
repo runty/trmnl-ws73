@@ -27,12 +27,12 @@ free -h
 df -h / "${PROJECT_DIR}" 2>/dev/null || true
 systemctl --failed --no-pager 2>/dev/null || true
 
-section "TRMNL Processes"
-pgrep -af "update_display|trmnl|python3|timeout" || true
+section "Updater Processes"
+pgrep -af "update_display|python3|timeout" || true
 
-section "TRMNL State"
+section "Display State"
 if [ -f "${CACHE_FILE}" ]; then
-    printf 'last image: '
+    printf 'last slide ETag: '
     cat "${CACHE_FILE}"
     printf '\n'
     stat -c '%y %n' "${CACHE_FILE}" 2>/dev/null || stat "${CACHE_FILE}" 2>/dev/null
@@ -40,7 +40,7 @@ else
     printf 'cache file missing: %s\n' "${CACHE_FILE}"
 fi
 
-section "TRMNL Log"
+section "Update Log"
 if [ -f "${LOG_FILE}" ]; then
     tail -80 "${LOG_FILE}"
 else
@@ -48,16 +48,8 @@ else
 fi
 
 section "Network"
-getent hosts usetrmnl.com || true
-python3 - <<'PY'
-import urllib.request
-
-try:
-    with urllib.request.urlopen("https://usetrmnl.com", timeout=10) as response:
-        print("https://usetrmnl.com", response.status)
-except Exception as e:
-    print("https://usetrmnl.com error", repr(e))
-PY
+curl -sS -o /dev/null -w 'WadsFrame health: HTTP %{http_code} in %{time_total}s\n' --max-time 15 \
+    "${WADSFRAME_HEALTH_URL:-http://192.168.22.102:3200/api/health}" || true
 if command -v nmcli >/dev/null 2>&1; then
     nmcli -t -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show wlan0 2>/dev/null || true
     wifi_connection="$(nmcli -g GENERAL.CONNECTION device show wlan0 2>/dev/null)"

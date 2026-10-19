@@ -1,5 +1,5 @@
 [Unit]
-Description=Recover Wi-Fi when the TRMNL host is unreachable
+Description=Recover Wi-Fi when ws73 cannot reach WadsFrame
 After=NetworkManager.service
 
 [Service]

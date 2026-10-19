@@ -42,12 +42,12 @@ HEARTBEAT_RESOLVE="${TRMNL_HEARTBEAT_RESOLVE:-}"
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
-    log "Another TRMNL update is still running; skipping this cycle."
+    log "Another display update is still running; skipping this cycle."
     exit 0
 fi
 
 start_ts="$(date +%s)"
-log "Starting TRMNL display update."
+log "Starting display update."
 
 set +e
 timeout --kill-after=30s "${RUN_TIMEOUT}" "${PYTHON_BIN}" -u "${SCRIPT_DIR}/update_display.py"
@@ -55,11 +55,11 @@ status="$?"
 
 elapsed="$(( $(date +%s) - start_ts ))"
 if [ "${status}" -eq 0 ]; then
-    log "Finished TRMNL display update in ${elapsed}s."
+    log "Finished display update in ${elapsed}s."
     send_heartbeat "OK" "$((elapsed * 1000))"
 elif [ "${status}" -eq 124 ] || [ "${status}" -eq 137 ]; then
-    log "ERROR: TRMNL display update timed out after ${RUN_TIMEOUT}; exit status ${status}."
+    log "ERROR: display update timed out after ${RUN_TIMEOUT}; exit status ${status}."
 else
-    log "ERROR: TRMNL display update failed after ${elapsed}s; exit status ${status}."
+    log "ERROR: display update failed after ${elapsed}s; exit status ${status}."
 fi
 exit "${status}"

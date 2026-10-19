@@ -1,8 +1,8 @@
 #!/bin/bash
 # Recover the Pi's Wi-Fi when it silently drops off the network.
 #
-# Runs as root from trmnl-network-watchdog.timer. Each run checks whether the
-# TRMNL host resolves; consecutive failures escalate:
+# Runs as root from trmnl-network-watchdog.timer. Each run checks whether
+# WadsFrame on Shrimp answers; consecutive failures escalate:
 #   TRMNL_WATCHDOG_RECONNECT_AFTER  failures -> re-activate the NM connection
 #   TRMNL_WATCHDOG_RADIO_AFTER      failures -> toggle the Wi-Fi radio
 #   TRMNL_WATCHDOG_REBOOT_AFTER     failures -> reboot (rate limited)
@@ -12,7 +12,7 @@
 # address such as 192.0.2.1 and a dry run, the escalation can be tested safely.
 set -u
 
-TRMNL_HOST="${TRMNL_WATCHDOG_HOST:-usetrmnl.com}"
+CHECK_URL="${TRMNL_WATCHDOG_URL:-http://192.168.22.102:3200/api/health}"
 WIFI_DEVICE="${TRMNL_WATCHDOG_DEVICE:-wlan0}"
 RECONNECT_AFTER="${TRMNL_WATCHDOG_RECONNECT_AFTER:-2}"
 RADIO_AFTER="${TRMNL_WATCHDOG_RADIO_AFTER:-4}"
@@ -36,7 +36,7 @@ act() {
 }
 
 healthy() {
-    timeout 10 getent ahosts "${TRMNL_HOST}" >/dev/null 2>&1
+    timeout 20 curl -fsS -o /dev/null --max-time 15 "${CHECK_URL}" >/dev/null 2>&1
 }
 
 gateway() {
@@ -63,16 +63,16 @@ fi
 
 gw="$(gateway)"
 if [ -n "${gw}" ] && ping -c 1 -W 3 "${gw}" >/dev/null 2>&1; then
-    # The LAN link is up; DNS or upstream is the problem, and bouncing Wi-Fi
-    # will not fix it. Log it without escalating.
-    log "Cannot resolve ${TRMNL_HOST}, but gateway ${gw} answers; not touching Wi-Fi."
+    # The LAN link is up; Shrimp or WadsFrame is the problem, and bouncing
+    # Wi-Fi will not fix it. Log it without escalating.
+    log "Cannot reach ${CHECK_URL}, but gateway ${gw} answers; not touching Wi-Fi."
     rm -f "${STATE_FILE}"
     exit 0
 fi
 
 failures="$((failures + 1))"
 printf '%s\n' "${failures}" > "${STATE_FILE}"
-log "Network check failed (${failures} in a row): no DNS for ${TRMNL_HOST}, gateway '${gw:-none}' unreachable."
+log "Network check failed (${failures} in a row): ${CHECK_URL} and gateway '${gw:-none}' unreachable."
 
 if [ "${failures}" -ge "${REBOOT_AFTER}" ]; then
     now="$(date +%s)"

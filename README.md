@@ -1,16 +1,30 @@
 # trmnl-ws73
 
-TRMNL client for a Raspberry Pi OS host driving a Waveshare 7.3 inch Spectra 6
-e-paper display.
+E-ink photo frame client for ws73, a Raspberry Pi Zero W driving a Waveshare
+7.3 inch Spectra 6 e-paper display (800×480, six colours, about 30 seconds per
+full refresh).
 
-This is the Linux/Python setup for a Raspberry Pi OS TRMNL frame. It is separate
-from the Pico W / Pimoroni Inky Frame MicroPython client in `trmnlframe`.
+ws73 shows photo slides from [WadsFrame](https://github.com/runty/wadsframe), the
+homelab display server on Shrimp: the same Google Photos albums, smart crops and
+collages as the Lenovo Smart Frame, changing hourly, with no clock. WadsFrame
+renders and dithers each slide to the panel's six inks; the Pi only fetches the
+PNG and draws it. Scene, album, slide time, next/previous and pause are Home
+Assistant controls on the WadsFrame device (`ws73 …` entities).
+
+Until 2026-10-19 this was a [TRMNL](https://usetrmnl.com) BYOD client; the TRMNL
+licence moved to a XIAO ESP32-C3 with a 7.5" panel. The `TRMNL_` prefix on
+settings, the repository name and the watchdog's unit names are left from then.
+It is separate from the Pico W / Pimoroni Inky Frame MicroPython client in
+`trmnlframe`.
 
 ## What It Does
 
-- Fetches `/api/display` from TRMNL.
-- Downloads the returned image only when the filename changes.
-- Renders the image through Waveshare's `epd7in3e` Python driver.
+- Polls `WADSFRAME_URL` (`/api/displays/ws73/eink.png`) with the last slide's
+  `ETag`; WadsFrame answers `304` until the slide changes, which it does at the
+  first poll after each hour.
+- Renders a new slide through Waveshare's `epd7in3e` Python driver. The PNG is
+  already in the driver's six colours, so the driver's own quantising changes
+  nothing.
 - Runs from cron every 15 minutes and once after boot.
 - Redraws an unchanged image after 12 hours, and treats a panel refresh that
   finishes in under 10 seconds as a failed draw, so a lost draw is retried.
@@ -18,14 +32,13 @@ from the Pico W / Pimoroni Inky Frame MicroPython client in `trmnlframe`.
   Wi-Fi, toggles the radio, then reboots if the Pi stays offline for an hour.
 - Optionally pings an Uptime Kuma push monitor after each successful run, so a
   stale screen raises an alert.
-- Sends the Wi-Fi signal level (`RSSI`) to TRMNL, shown on the device page.
 - Refuses to run if the Waveshare BUSY timeout patch is missing.
 - Uses a lock, outer timeout, HTTP retries, display timeout, and BUSY-pin timeout
   so one bad refresh cannot pile up cron jobs indefinitely.
 
 ## Files
 
-- `scripts/update_display.py` - TRMNL API fetch, image processing, display update.
+- `scripts/update_display.py` - WadsFrame fetch and display update.
 - `scripts/update_display.sh` - cron-safe launcher with env loading, lock, timeout.
 - `scripts/status.sh` - local diagnostic helper for stale screens and Wi-Fi issues.
 - `scripts/network_watchdog.sh` - Wi-Fi recovery run by the watchdog timer.
@@ -59,12 +72,13 @@ cp trmnl-ws73.env.example trmnl-ws73.env
 chmod 600 trmnl-ws73.env
 ```
 
-Edit `trmnl-ws73.env` and set:
+Edit `trmnl-ws73.env` if WadsFrame's address or the display id differ:
 
 ```bash
-TRMNL_API_KEY=...
-TRMNL_MAC=...
+WADSFRAME_URL=http://192.168.22.102:3200/api/displays/ws73/eink.png
 ```
+
+WadsFrame must list the display in `EINK_DISPLAYS` (`ws73:800x480`).
 
 Install cron and log rotation:
 
@@ -116,18 +130,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trmnl-network-watchdog.timer
 ```
 
-Every 5 minutes it checks that `usetrmnl.com` resolves. If it does not and the
-default gateway also does not answer, it re-activates `wlan0` after 2 failed
-checks, toggles the Wi-Fi radio from 4, and reboots at 12 (one hour), at most
-once every 6 hours. When the gateway answers but DNS fails, it only logs. Its
-messages go to the journal under `trmnl-network-watchdog`.
+Every 5 minutes it checks that WadsFrame's health URL on Shrimp
+(`http://192.168.22.102:3200/api/health`, override with `TRMNL_WATCHDOG_URL`)
+answers. If it does not and the default gateway also does not answer, it
+re-activates `wlan0` after 2 failed checks, toggles the Wi-Fi radio from 4, and
+reboots at 12 (one hour), at most once every 6 hours. When the gateway answers
+but WadsFrame does not (Shrimp down or restarting), it only logs. Its messages
+go to the journal under `trmnl-network-watchdog`.
 
 Test the escalation without touching Wi-Fi by pointing it at a missing host and
 an unreachable gateway in dry-run mode; each run adds one failure:
 
 ```bash
 for i in $(seq 1 12); do
-  sudo TRMNL_WATCHDOG_DRY_RUN=1 TRMNL_WATCHDOG_HOST=nonexistent.invalid \
+  sudo TRMNL_WATCHDOG_DRY_RUN=1 TRMNL_WATCHDOG_URL=http://nonexistent.invalid/ \
     TRMNL_WATCHDOG_GATEWAY=192.0.2.1 TRMNL_WATCHDOG_STATE=/tmp/wd-test \
     TRMNL_WATCHDOG_REBOOT_STAMP=/tmp/wd-test-reboot \
     ~/trmnl-scripts/scripts/network_watchdog.sh
@@ -186,14 +202,14 @@ It checks:
 
 - whether an updater or timeout process is still running
 - the latest `cron.log` refresh attempt
-- the cached TRMNL image filename
-- DNS and HTTPS reachability for `usetrmnl.com`
+- the last drawn slide's ETag
+- whether WadsFrame's health URL answers
 - NetworkManager and Wi-Fi events from the current boot
 - temperature and throttling, when `vcgencmd` is available
 
 If the log shows `NameResolutionError`, `link timed out`, or failed Wi-Fi
 activation before the updater reaches `Initializing display...`, the screen is
-stale because the Pi missed a network/API refresh, not because the display path
+stale because the Pi missed a network/WadsFrame refresh, not because the display path
 hung. Once network is back, run:
 
 ```bash
@@ -206,4 +222,9 @@ GPIO messages in `journalctl`.
 
 ## Notes
 
-Do not commit `trmnl-ws73.env`; it contains the TRMNL API key and device MAC.
+Do not commit `trmnl-ws73.env`; it holds the Uptime Kuma push token.
+
+To see what ws73 should be showing, open
+`http://192.168.22.102:3200/api/displays/ws73/eink.png?preview=1` from the LAN:
+the current slide as the panel shows it. Polling it does not move the slide on
+before the hour.

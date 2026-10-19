@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Draws ws73's WadsFrame slide on the Waveshare 7.3" Spectra 6 panel when it changes.
+# WadsFrame (on Shrimp) picks the slide and dithers it to the panel's six inks; this script only
+# fetches the PNG, skipping the draw while the slide's ETag is unchanged.
 import os
 import signal
 import sys
@@ -23,9 +26,9 @@ from waveshare_epd import epd7in3e  # noqa: E402
 BUSY_PATCH_APPLIED = hasattr(epd7in3e, "BUSY_TIMEOUT_SECONDS")
 
 
-BASE_URL = os.getenv("TRMNL_BASE_URL", "https://usetrmnl.com")
-API_KEY = os.getenv("TRMNL_API_KEY", "")
-MAC_ADDRESS = os.getenv("TRMNL_MAC", "")
+IMAGE_URL = os.getenv(
+    "WADSFRAME_URL", "http://192.168.22.102:3200/api/displays/ws73/eink.png"
+)
 TARGET_RES = (
     int(os.getenv("TRMNL_WIDTH", "800")),
     int(os.getenv("TRMNL_HEIGHT", "480")),
@@ -38,9 +41,6 @@ CACHE_FILE = os.path.expanduser(
 MIN_REFRESH_SECONDS = float(os.getenv("TRMNL_MIN_REFRESH_SECONDS", "10"))
 # Redraw an unchanged image after this long, in case an earlier draw was lost.
 FORCE_REDRAW_HOURS = float(os.getenv("TRMNL_FORCE_REDRAW_HOURS", "12"))
-DISPLAY_MODEL = os.getenv("TRMNL_MODEL", "Waveshare 7.3 Spectra 6")
-CLIENT_VERSION = "1.1.0"
-WIFI_DEVICE = os.getenv("TRMNL_WIFI_DEVICE", "wlan0")
 DISPLAY_TIMEOUT_SECONDS = int(os.getenv("TRMNL_DISPLAY_TIMEOUT", "600"))
 DISPLAY_CLEANUP_TIMEOUT_SECONDS = int(os.getenv("TRMNL_DISPLAY_CLEANUP_TIMEOUT", "30"))
 HTTP_ATTEMPTS = int(os.getenv("TRMNL_HTTP_ATTEMPTS", "3"))
@@ -93,23 +93,19 @@ def sleep_display(epd):
         epd.sleep()
 
 
-def wifi_rssi():
-    """Signal level in dBm from /proc/net/wireless, or None."""
-    try:
-        with open("/proc/net/wireless", "r", encoding="utf-8") as f:
-            for line in f:
-                fields = line.split()
-                if fields and fields[0] == f"{WIFI_DEVICE}:":
-                    return int(float(fields[3]))
-    except (OSError, IndexError, ValueError):
-        pass
-    return None
+def read_cache():
+    """The last drawn slide's ETag and the cache's age in hours, or ("", None)."""
+    if not os.path.exists(CACHE_FILE):
+        return "", None
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        etag = f.read().strip()
+    return etag, (time.time() - os.path.getmtime(CACHE_FILE)) / 3600
 
 
-def write_cache(filename):
+def write_cache(etag):
     tmp = f"{CACHE_FILE}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(filename)
+        f.write(etag)
     os.replace(tmp, CACHE_FILE)
 
 
@@ -120,12 +116,6 @@ def validate_config():
             f"{epd7in3e.__file__}; reapply patches/waveshare-epd7in3e-busy-timeout.patch"
         )
         return False
-    if not API_KEY:
-        log("Missing TRMNL_API_KEY")
-        return False
-    if not MAC_ADDRESS:
-        log("Missing TRMNL_MAC")
-        return False
     return True
 
 
@@ -134,73 +124,36 @@ def update_display():
         return False
 
     try:
-        api_url = f"{BASE_URL}/api/display"
-        headers = {
-            "ID": MAC_ADDRESS,
-            "Access-Token": API_KEY,
-            "Content-Type": "application/json",
-            "Width": str(TARGET_RES[0]),
-            "Height": str(TARGET_RES[1]),
-            "Model": DISPLAY_MODEL,
-            "FW-Version": CLIENT_VERSION,
-        }
-        rssi = wifi_rssi()
-        if rssi is not None:
-            headers["RSSI"] = str(rssi)
-        api_response = get_with_retries(api_url, headers=headers, timeout=30)
+        last_etag, cache_age_hours = read_cache()
+        headers = {}
+        # Past FORCE_REDRAW_HOURS, fetch without If-None-Match so an unchanged slide is redrawn
+        # too, in case an earlier draw was lost.
+        if last_etag and (FORCE_REDRAW_HOURS <= 0 or cache_age_hours < FORCE_REDRAW_HOURS):
+            headers["If-None-Match"] = last_etag
+        response = get_with_retries(IMAGE_URL, headers=headers, timeout=60)
         try:
-            if api_response.status_code != 200:
-                log(f"API error: {api_response.status_code} {api_response.text[:200]}")
+            if response.status_code == 304:
+                log(f"No change detected ({last_etag}). Skipping update.")
+                return True
+            if response.status_code != 200:
+                log(f"WadsFrame error: {response.status_code} {response.text[:200]}")
                 return False
-            data = api_response.json()
+            etag = response.headers.get("ETag", "")
+            img = Image.open(BytesIO(response.content))
+            img.load()
         finally:
-            api_response.close()
+            response.close()
 
-        api_status = data.get("status", 0)
-        if api_status not in (0, 200):
-            reason = data.get("error") or data.get("message") or "no reason given"
-            log(f"API returned status {api_status}: {reason}")
-            return False
+        if etag and etag == last_etag:
+            log(f"Slide unchanged for {cache_age_hours:.1f}h ({etag}); redrawing anyway.")
+        else:
+            log(f"New slide: {etag or 'no ETag'}.")
 
-        img_url = data.get("image_url")
-        current_filename = data.get("filename") or data.get("image_name") or img_url
-
-        if not img_url:
-            log("No image URL in response")
-            return False
-
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                last_filename = f.read().strip()
-            cache_age_hours = (time.time() - os.path.getmtime(CACHE_FILE)) / 3600
-            if current_filename == last_filename:
-                if FORCE_REDRAW_HOURS <= 0 or cache_age_hours < FORCE_REDRAW_HOURS:
-                    log(f"No change detected ({current_filename}). Skipping update.")
-                    return True
-                log(
-                    f"Image unchanged for {cache_age_hours:.1f}h ({current_filename}); "
-                    "redrawing anyway."
-                )
-
-        log(f"New image found: {current_filename}. Downloading...")
-
-        if img_url.startswith("/"):
-            img_url = f"{BASE_URL}{img_url}"
-
-        img_response = get_with_retries(img_url, timeout=60)
-        try:
-            if img_response.status_code != 200:
-                log(f"Image download failed: {img_response.status_code}")
-                return False
-            img = Image.open(BytesIO(img_response.content))
-        finally:
-            img_response.close()
-
-        # Convert first: Pillow resizes palette images with NEAREST regardless
-        # of the requested filter.
+        # WadsFrame sends the panel's own colours, already dithered; resizing would spoil that.
         img = img.convert("RGB")
         if img.size != TARGET_RES:
-            img = img.resize(TARGET_RES, Image.Resampling.LANCZOS)
+            log(f"Slide is {img.size[0]}x{img.size[1]}, expected {TARGET_RES[0]}x{TARGET_RES[1]}")
+            return False
 
         epd = None
         try:
@@ -235,7 +188,7 @@ def update_display():
             raise
         sleep_display(epd)
 
-        write_cache(current_filename)
+        write_cache(etag)
 
         log("Update complete!")
         return True
